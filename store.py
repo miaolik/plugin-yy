@@ -11,6 +11,8 @@ CONFIG_FILE = os.path.join(STATE_DIR, "config.json")
 
 # 预置管理员（可用指令增删）
 DEFAULT_ADMINS = ["538389445D765D2988BFE31506C54799"]
+# 内置默认 p_skey.txt 路径（与 web 服务器同机，可用指令覆盖）
+DEFAULT_CK_FILE_PATH = r"C:\wwwroot\lala.fan\API\p_skey.txt"
 
 
 def _read() -> dict:
@@ -29,8 +31,8 @@ def _write(data: dict):
 
 
 def get_ck_file_path() -> str:
-    """本机（与 web 服务器同机）直接写入的 p_skey.txt 路径。"""
-    return _read().get("ck_file_path", "")
+    """本机（与 web 服务器同机）直接写入的 p_skey.txt 路径，默认内置路径。"""
+    return _read().get("ck_file_path") or DEFAULT_CK_FILE_PATH
 
 
 def set_ck_file_path(path: str):

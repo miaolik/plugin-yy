@@ -109,6 +109,45 @@ async def cmd_update_ck(event, match):
         await qr.close()
 
 
+@handler(r'^(点歌菜单|点歌帮助)$', name='点歌菜单',
+         desc='查看点歌管理操作(仅管理员)', priority=100, block=True, ignore_at_check=True)
+async def cmd_menu(event, match):
+    if not await _require_admin(event):
+        return
+    path = get_ck_file_path()
+    url = get_set_ck_url()
+    token_set = "已配置" if get_ck_token() else "未配置"
+    admins = get_admins()
+    lines = [
+        "🎵 点歌管理菜单（仅管理员可见）",
+        "",
+        "【所有人可用】",
+        "· 点歌 歌名 —— 搜索歌曲",
+        "· 听N —— 播放第 N 首（如 听1）",
+        "",
+        "【管理员】CK 更新",
+        "· 更新点歌CK —— 扫码登录QQ音乐，自动更新 p_skey.txt",
+        "  别名：点歌登录 / 点歌CK登录",
+        "",
+        "【管理员】配置",
+        "· 设置点歌CK文件路径 <路径> —— 同机直写(已内置默认)",
+        "· 设置点歌CK地址 <URL> —— 跨机 set_ck.php 地址",
+        "· 设置点歌CK密钥 <token> —— 跨机写入密钥",
+        "",
+        "【管理员】白名单",
+        "· 添加点歌管理员 @用户 / 点歌管理员添加",
+        "· 删除点歌管理员 @用户 / 点歌管理员删除",
+        "· 点歌管理员列表",
+        "",
+        "—— 当前配置 ——",
+        f"· CK 文件路径：{path}",
+        f"· set_ck.php 地址：{url or '未配置'}",
+        f"· 写入密钥：{token_set}",
+        f"· 管理员人数：{len(admins)}",
+    ]
+    await event.reply("\n".join(lines))
+
+
 @handler(r'^设置点歌CK文件路径\s*(\S+)$', name='设置点歌CK文件路径',
          desc='配置本机 p_skey.txt 路径(同机直写)', priority=100, block=True, ignore_at_check=True)
 async def cmd_set_path(event, match):

@@ -222,7 +222,8 @@ async def play_music(event, match):
 
 
 def _pick_play_url(quality_list) -> str:
-    """优先选 mp3 直链当语音，其次任意可用直链。"""
+    """选语音直链：优先 320kbps mp3，其次任意 mp3，再次任意可用直链。"""
+    q320 = ''
     mp3 = ''
     first = ''
     for q in quality_list:
@@ -231,9 +232,12 @@ def _pick_play_url(quality_list) -> str:
             continue
         if not first:
             first = url
-        if '.mp3' in url.lower() and not mp3:
+        is_mp3 = '.mp3' in url.lower()
+        if is_mp3 and not mp3:
             mp3 = url
-    return mp3 or first
+        if is_mp3 and not q320 and (str(q.get('quality')) == '320' or '320' in str(q.get('bitrate') or '')):
+            q320 = url
+    return q320 or mp3 or first
 
 
 async def _send_voice(event, url: str) -> None:

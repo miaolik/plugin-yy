@@ -22,6 +22,9 @@ from .store import (
 
 _POLL_INTERVAL = 2.0
 _POLL_TIMEOUT = 120
+_MAX_REFRESH = 3
+# 扫码更新成功后在此群发"登录成功"提示
+_NOTIFY_GROUP = '8B642C645CED489615DDD70140440459'
 
 
 async def _require_admin(event) -> bool:
@@ -90,6 +93,7 @@ async def cmd_update_ck(event, match):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _POLL_TIMEOUT
         scanned = False
+        refreshed = 0
         while loop.time() < deadline:
             await asyncio.sleep(_POLL_INTERVAL)
             r = await qr.poll()
@@ -97,8 +101,19 @@ async def cmd_update_ck(event, match):
             if st == "success":
                 result = await _push_ck(r["cookie"])
                 await event.reply(result)
+                if "✅" in result:
+                    await _notify_login_ok(event)
                 return
             if st == "expired":
+                if refreshed < _MAX_REFRESH:
+                    refreshed += 1
+                    try:
+                        png = await qr.fetch_qr()
+                        await event.reply_image(png, content="上一张二维码过期了，这是新的，请尽快扫码～")
+                        scanned = False
+                        continue
+                    except Exception:
+                        pass
                 await event.reply("⏰ 二维码已过期，请重新发「更新点歌CK」～")
                 return
             if st == "error":
@@ -110,6 +125,29 @@ async def cmd_update_ck(event, match):
         await event.reply("⏰ 超时未完成扫码，请重新发「更新点歌CK」～")
     finally:
         await qr.close()
+
+
+async def _notify_login_ok(event):
+    """扫码更新成功后，在群里发一条登录成功提示。"""
+    try:
+        await event.send_to_group(_NOTIFY_GROUP, "✅ 点歌CK已更新（扫码登录成功），点歌恢复正常～")
+    except Exception:
+        pass
+
+
+@handler(r'^(点歌CK|更新CK|设置点歌CK)\s+([\s\S]+)$', name='粘贴点歌CK',
+         desc='粘贴浏览器 document.cookie 直接更新 p_skey.txt', priority=100, block=True, ignore_at_check=True)
+async def cmd_paste_ck(event, match):
+    if not await _require_admin(event):
+        return
+    cookie = (match.group(2) or "").strip()
+    if "qm_keyst=" not in cookie:
+        await event.reply("❌ 这串 Cookie 里没有 qm_keyst，请在已登录的 y.qq.com 页面控制台执行 copy(document.cookie) 再粘贴整串～")
+        return
+    result = await _push_ck(cookie)
+    await event.reply(result)
+    if "✅" in result:
+        await _notify_login_ok(event)
 
 
 @handler(r'^(点歌菜单|点歌帮助)$', name='点歌菜单',
@@ -131,6 +169,7 @@ async def cmd_menu(event, match):
         "【管理员】CK 更新",
         "· 更新点歌CK —— 扫码登录QQ音乐，自动更新 p_skey.txt",
         "  别名：点歌登录 / 点歌CK登录",
+        "· 点歌CK <整串Cookie> —— 浏览器登录y.qq.com后 copy(document.cookie) 粘贴，直接写入(最稳)",
         "",
         "【管理员】配置",
         "· 设置点歌CK文件路径 <路径> —— 同机直写(已内置默认)",

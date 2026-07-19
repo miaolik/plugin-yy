@@ -8,6 +8,7 @@
 5. 用 code 调 music.login.LoginServer/Login 换取 musickey(qm_keyst) 与 musicid(uin)；
 6. 拼成 qq.php 需要的 Cookie 串：uin/qm_keyst/qqmusic_key/ptcz/RK。
 """
+import asyncio
 import json
 import re
 import time
@@ -116,14 +117,20 @@ class QRSession:
         return {"status": "waiting", "message": body[:80]}
 
     async def _finish(self, check_url: str) -> str:
-        # 1) 访问 check_sig，服务端写入 p_skey / ptcz / RK 等
-        if check_url:
-            async with self.session.get(
-                check_url, headers={"Referer": "https://xui.ptlogin2.qq.com/", "User-Agent": _UA},
-                allow_redirects=True,
-            ):
-                pass
-        p_skey = _cookie(self.jar, "p_skey") or _cookie(self.jar, "skey")
+        # 1) 访问 check_sig，服务端写入 p_skey / ptcz / RK 等。
+        #    cookie 落地偶有时序延迟，重试几次直到拿到 p_skey。
+        p_skey = ""
+        for attempt in range(5):
+            if check_url:
+                async with self.session.get(
+                    check_url, headers={"Referer": "https://xui.ptlogin2.qq.com/", "User-Agent": _UA},
+                    allow_redirects=True,
+                ):
+                    pass
+            p_skey = _cookie(self.jar, "p_skey") or _cookie(self.jar, "skey")
+            if p_skey:
+                break
+            await asyncio.sleep(0.6)
         if not p_skey:
             raise RuntimeError("未取到 p_skey")
         gtk = g_tk(p_skey)

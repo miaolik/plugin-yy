@@ -212,15 +212,16 @@ class QRSession:
         if not musickey or not musicid:
             raise RuntimeError(f"Login 返回缺字段: {list(info.keys())}")
 
-        ptcz = _cookie(self.jar, "ptcz")
-        rk = _cookie(self.jar, "RK")
+        # 写入完整 Cookie：先放登录接口返回的核心字段(登录态里未必落到 cookie 里)，
+        # 再补上 cookie jar 里的其余全部字段，交给 PHP 自行挑选需要的项。
         pairs = [
             f"uin={musicid}",
             f"qm_keyst={musickey}",
-            f"qqmusic_key={musickey}",
         ]
-        if ptcz:
-            pairs.append(f"ptcz={ptcz}")
-        if rk:
-            pairs.append(f"RK={rk}")
+        seen = {"uin", "qm_keyst", "qrsig"}
+        for c in self.jar:
+            if c.key in seen:
+                continue
+            seen.add(c.key)
+            pairs.append(f"{c.key}={c.value}")
         return "; ".join(pairs)

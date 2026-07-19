@@ -1,26 +1,42 @@
-"""音乐点歌: QQ音乐搜索与播放"""
+"""音乐点歌: QQ音乐搜索与播放（lala.fan 接口 + CK 过期主动提醒）"""
 
 __plugin_meta__ = {
     'name': '音乐点歌',
     'author': 'lengxi',
-    'description': 'QQ音乐搜索与播放',
-    'version': '1.0.0',
+    'description': 'QQ音乐搜索与播放，CK 过期主动提醒',
+    'version': '2.0.0',
 }
 
 
+import json
+import re
+import time
 import urllib.parse
 from collections import OrderedDict
 
 from core.network.http_compat import AsyncHttpClient
 from core.plugin.decorators import handler, on_unload
 
-_API = 'https://a.aa.cab/qq.music'
+# ==================== 配置（按需修改）====================
+_API = 'https://lala.fan/API/qq.php'
+# CK 过期时主动提醒的目标（私聊用户 + 群）
+_ALERT_USER = '538389445D765D2988BFE31506C54799'
+_ALERT_GROUP = '8B642C645CED489615DDD70140440459'
+# 提醒去重间隔（秒），避免频繁刷屏
+_ALERT_INTERVAL = 1800
+# 判定 CK 是否真过期的探针关键词（热门词，CK 正常时必有结果）
+_PROBE_KEYWORD = '周杰伦'
+# =======================================================
+
 _BTN = [[{'text': '再点一首', 'data': '点歌', 'enter': False, 'style': 1}]]
 _STRIP_TBL = str.maketrans('', '', '"\'<>&*_~`[](){}\\/:')
+# CK 过期/失效相关错误码（-3 需探针确认；-2/-10 为明确的 Cookie 问题）
+_CK_ERR_CODES = {-2, -10}
 
 _client: AsyncHttpClient | None = None
 _cache: OrderedDict = OrderedDict()  # uid -> {keyword, count}
 _CACHE_CAP = 100
+_alert_ts: float = 0.0
 
 
 async def _http():
@@ -38,12 +54,64 @@ async def _cleanup():
     _client = None
 
 
-async def _api(params: str):
-    """统一 API 请求，返回 data 字段或 None"""
+async def _fetch(params: str) -> str:
+    """请求接口，返回原始文本（搜索列表是纯文本，播放/错误是 JSON）。"""
     c = await _http()
     resp = await c.get(f'{_API}?{params}')
-    body = resp.json()
-    return (body or {}).get('data')
+    return (resp.content or b'').decode('utf-8', 'ignore')
+
+
+def _try_json(text: str):
+    """能解析成 JSON 返回 dict，否则 None（纯文本搜索结果）。"""
+    s = text.lstrip()
+    if not s.startswith('{'):
+        return None
+    try:
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else None
+    except ValueError:
+        return None
+
+
+def _parse_search_list(text: str) -> list[str]:
+    """解析纯文本搜索结果：'1、歌名 - 歌手 [免费]' 每行一首。"""
+    songs = []
+    for line in text.splitlines():
+        m = re.match(r'^\s*\d+\s*[、..)]\s*(.+)$', line)
+        if m:
+            songs.append(m.group(1).strip())
+    return songs
+
+
+async def _ck_expired() -> bool:
+    """用热门词探针确认 CK 是否真过期：探针也无结果才判为过期。"""
+    try:
+        text = await _fetch(f'msg={urllib.parse.quote(_PROBE_KEYWORD)}')
+    except Exception:
+        return False
+    j = _try_json(text)
+    if j is None:
+        return False  # 探针拿到纯文本列表 → CK 正常
+    return j.get('code') in (-2, -3, -10)
+
+
+async def _alert_ck_expired(event):
+    """CK 过期时主动给配置的私聊用户和群发提醒（带去重间隔）。"""
+    global _alert_ts
+    now = time.time()
+    if now - _alert_ts < _ALERT_INTERVAL:
+        return
+    _alert_ts = now
+    msg = '⚠ 点歌服务的 QQ音乐 Cookie 已过期，暂时点不了歌了，请尽快发「更新点歌CK」扫码更新～'
+    try:
+        await event.send_to_user(_ALERT_USER, msg)
+    except Exception:
+        pass
+    try:
+        # 群内 @ 管理员提醒
+        await event.send_to_group(_ALERT_GROUP, f'<@{_ALERT_USER}> {msg}')
+    except Exception:
+        pass
 
 
 def _cache_put(uid, val):
@@ -54,6 +122,24 @@ def _cache_put(uid, val):
         _cache.popitem(last=False)
 
 
+async def _handle_error_code(event, uid, code) -> None:
+    """统一处理错误码：CK 过期则主动提醒，否则给出对应提示。"""
+    if code in _CK_ERR_CODES or code == -3:
+        if await _ck_expired():
+            await _alert_ck_expired(event)
+            await event.reply(f'<@{uid}> 点歌服务 Cookie 已过期，已通知管理员更新，稍后再试～',
+                              buttons=_BTN)
+        else:
+            await event.reply(f'<@{uid}> 未找到相关歌曲，请尝试其他关键词', buttons=_BTN)
+    elif code == -5:
+        await event.reply(f'<@{uid}> 未获取到歌曲链接（可能是会员/版权限制），换一首试试吧！',
+                          buttons=_BTN)
+    elif code == -1:
+        await event.reply(f'<@{uid}> 点歌 请输入要搜索的歌曲名')
+    else:
+        await event.reply(f'<@{uid}> 点歌失败，请稍后重试', buttons=_BTN)
+
+
 @handler(r'^点歌(.*)$', name='点歌', desc='搜索QQ音乐')
 async def search_music(event, match):
     uid = str(event.user_id)
@@ -62,10 +148,15 @@ async def search_music(event, match):
         return await event.reply(f'<@{uid}> 点歌 请输入要搜索的歌曲名')
 
     try:
-        songs = await _api(f'msg={urllib.parse.quote(keyword)}')
+        text = await _fetch(f'msg={urllib.parse.quote(keyword)}')
     except Exception:
         return await event.reply(f'<@{uid}> 网络请求超时，请稍后重试', buttons=_BTN)
 
+    err = _try_json(text)
+    if err is not None:
+        return await _handle_error_code(event, uid, err.get('code'))
+
+    songs = _parse_search_list(text)
     if not songs:
         return await event.reply(f'<@{uid}> 未找到相关歌曲，请尝试其他关键词', buttons=_BTN)
 
@@ -74,7 +165,7 @@ async def search_music(event, match):
 
     lines = []
     for i, song in enumerate(songs[:count]):
-        name = song.get('song', '未知').translate(_STRIP_TBL).strip()[:50]
+        name = song.translate(_STRIP_TBL).strip()[:50]
         lines.append(f'{i+1}. <qqbot-cmd-input text="听{i+1}" show="{name}" />')
 
     await event.reply(f'<@{uid}>点歌结果\n以下是搜索到的歌曲\n\n' + '\n'.join(lines) + '\n',
@@ -95,11 +186,21 @@ async def play_music(event, match):
         return await event.reply(f'<@{uid}> 序号无效，请输入 1~{info["count"]} 之间的数字')
 
     try:
-        data = await _api(f'msg={urllib.parse.quote(info["keyword"])}&n={idx}')
+        text = await _fetch(f'msg={urllib.parse.quote(info["keyword"])}&n={idx}')
     except Exception:
         return await event.reply(f'<@{uid}> 网络请求超时，请稍后重试', buttons=_BTN)
 
-    music_url = (data or {}).get('music')
+    data = _try_json(text)
+    if data is None or data.get('code') != 0:
+        code = data.get('code') if data else None
+        return await _handle_error_code(event, uid, code)
+
+    quality_list = (data.get('data') or {}).get('quality_list') or []
+    music_url = ''
+    for q in quality_list:
+        if q.get('play_url'):
+            music_url = q['play_url']
+            break
     if not music_url:
         return await event.reply(f'<@{uid}> 未获取到歌曲链接，请换一首歌尝试吧！', buttons=_BTN)
 

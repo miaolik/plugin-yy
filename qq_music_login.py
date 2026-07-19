@@ -60,6 +60,42 @@ class QRSession:
         self.qrsig = ""
         self.ptqrtoken = 0
         self.created = time.time()
+        # 手动收集所有 Set-Cookie（部分 aiohttp 版本在 302 跳转时不把 cookie 写进 jar，
+        # 导致 p_skey/skey 拿不到。我们逐跳自己抠出来，不依赖 jar 的自动管理）。
+        self.cookies = {}
+
+    def _absorb(self, resp):
+        for sc in resp.headers.getall("Set-Cookie", []):
+            first = sc.split(";", 1)[0].strip()
+            if "=" not in first:
+                continue
+            k, v = first.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if k and v and v.upper() not in ("", "DELETED", "EXPIRED"):
+                self.cookies[k] = v
+
+    def _get(self, key: str) -> str:
+        return self.cookies.get(key) or _cookie(self.jar, key)
+
+    async def _hop(self, url: str, referer: str = "https://xui.ptlogin2.qq.com/", max_redirects: int = 8):
+        """手动逐跳跟随 302，收集每跳的 Set-Cookie，返回 (最终body, 途经URL列表)。"""
+        urls = []
+        cur = url
+        for _ in range(max_redirects):
+            urls.append(cur)
+            async with self.session.get(
+                cur, headers={"Referer": referer, "User-Agent": _UA}, allow_redirects=False,
+            ) as resp:
+                self._absorb(resp)
+                loc = resp.headers.get("Location", "")
+                body = await resp.text()
+            if loc:
+                cur = urllib.parse.urljoin(cur, loc)
+                continue
+            urls.append(cur)
+            return body, urls
+        return "", urls
 
     async def close(self):
         try:
@@ -127,12 +163,7 @@ class QRSession:
             return ""
         for _ in range(5):
             try:
-                async with self.session.get(
-                    check_url, headers={"Referer": "https://xui.ptlogin2.qq.com/", "User-Agent": _UA},
-                    allow_redirects=True,
-                ) as resp:
-                    urls = [str(resp.url)] + [str(h.url) for h in resp.history]
-                    text = await resp.text()
+                text, urls = await self._hop(check_url)
             except Exception:
                 urls, text = [], ""
             for u in urls:
@@ -142,14 +173,14 @@ class QRSession:
             m = re.search(r"code=([A-Za-z0-9]+)", text)
             if m:
                 return m.group(1)
-            if _cookie(self.jar, "p_skey") or _cookie(self.jar, "skey"):
+            if self._get("p_skey") or self._get("skey"):
                 break
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.8)
         return ""
 
     async def _authorize_for_code(self) -> str:
         """回退：用 g_tk(p_skey/skey) 主动向 graph.qq.com 换 code。"""
-        p_skey = _cookie(self.jar, "p_skey") or _cookie(self.jar, "skey")
+        p_skey = self._get("p_skey") or self._get("skey")
         if not p_skey:
             return ""
         data = {
@@ -173,12 +204,30 @@ class QRSession:
                 headers={"Referer": "https://graph.qq.com/", "User-Agent": _UA},
                 allow_redirects=False,
             ) as resp:
+                self._absorb(resp)
                 loc = resp.headers.get("Location", "")
                 body = await resp.text()
         except Exception:
             return ""
         m = re.search(r"code=([^&\"']+)", loc) or re.search(r"code=([^&\"']+)", body)
-        return m.group(1) if m else ""
+        if m:
+            return m.group(1)
+        # authorize 若又 302 到回调页，code 在后续跳转里，逐跳跟随抓取
+        if loc:
+            try:
+                text2, urls2 = await self._hop(urllib.parse.urljoin(
+                    "https://graph.qq.com/oauth2.0/authorize", loc),
+                    referer="https://graph.qq.com/")
+            except Exception:
+                text2, urls2 = "", []
+            for u in urls2:
+                m = re.search(r"[?&#]code=([^&\"'#]+)", u)
+                if m:
+                    return m.group(1)
+            m = re.search(r"code=([A-Za-z0-9]+)", text2)
+            if m:
+                return m.group(1)
+        return ""
 
     async def _finish(self, check_url: str) -> str:
         # 1) 跟随登录跳转链直接抓 code；抓不到再回退到手动 authorize。
@@ -186,7 +235,7 @@ class QRSession:
         if not code:
             code = await self._authorize_for_code()
         if not code:
-            has_pskey = bool(_cookie(self.jar, "p_skey") or _cookie(self.jar, "skey"))
+            has_pskey = bool(self._get("p_skey") or self._get("skey"))
             raise RuntimeError(
                 "未换取到 OAuth code" + ("（已登录但授权未回跳code）" if has_pskey else "（未取到登录态）"))
 
@@ -213,12 +262,17 @@ class QRSession:
             raise RuntimeError(f"Login 返回缺字段: {list(info.keys())}")
 
         # 写入完整 Cookie：先放登录接口返回的核心字段(登录态里未必落到 cookie 里)，
-        # 再补上 cookie jar 里的其余全部字段，交给 PHP 自行挑选需要的项。
+        # 再补上手动收集 + jar 里的其余全部字段，交给 PHP 自行挑选需要的项。
         pairs = [
             f"uin={musicid}",
             f"qm_keyst={musickey}",
         ]
         seen = {"uin", "qm_keyst", "qrsig"}
+        for k, v in self.cookies.items():
+            if k in seen:
+                continue
+            seen.add(k)
+            pairs.append(f"{k}={v}")
         for c in self.jar:
             if c.key in seen:
                 continue

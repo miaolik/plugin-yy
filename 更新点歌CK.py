@@ -112,6 +112,19 @@ async def cmd_update_ck(event, match):
         await qr.close()
 
 
+@handler(r'^(点歌CK|更新CK|设置点歌CK)\s+([\s\S]+)$', name='粘贴点歌CK',
+         desc='粘贴浏览器 document.cookie 直接更新 p_skey.txt', priority=100, block=True, ignore_at_check=True)
+async def cmd_paste_ck(event, match):
+    if not await _require_admin(event):
+        return
+    cookie = (match.group(2) or "").strip()
+    if "qm_keyst=" not in cookie:
+        await event.reply("❌ 这串 Cookie 里没有 qm_keyst，请在已登录的 y.qq.com 页面控制台执行 copy(document.cookie) 再粘贴整串～")
+        return
+    result = await _push_ck(cookie)
+    await event.reply(result)
+
+
 @handler(r'^(点歌菜单|点歌帮助)$', name='点歌菜单',
          desc='查看点歌管理操作(仅管理员)', priority=100, block=True, ignore_at_check=True)
 async def cmd_menu(event, match):
@@ -131,6 +144,7 @@ async def cmd_menu(event, match):
         "【管理员】CK 更新",
         "· 更新点歌CK —— 扫码登录QQ音乐，自动更新 p_skey.txt",
         "  别名：点歌登录 / 点歌CK登录",
+        "· 点歌CK <整串Cookie> —— 浏览器登录y.qq.com后 copy(document.cookie) 粘贴，直接写入(最稳)",
         "",
         "【管理员】配置",
         "· 设置点歌CK文件路径 <路径> —— 同机直写(已内置默认)",

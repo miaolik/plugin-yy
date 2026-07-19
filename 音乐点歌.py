@@ -141,7 +141,7 @@ async def _handle_error_code(event, uid, code) -> None:
         await event.reply(f'<@{uid}> 点歌失败，请稍后重试', buttons=_BTN)
 
 
-@handler(r'^点歌(.*)$', name='点歌', desc='搜索QQ音乐')
+@handler(r'^/?\s*点歌\s*(.*)$', name='点歌', desc='搜索QQ音乐')
 async def search_music(event, match):
     uid = str(event.user_id)
     keyword = match.group(1).strip()
@@ -173,7 +173,7 @@ async def search_music(event, match):
                       buttons=_BTN)
 
 
-@handler(r'^听([0-9]+)$', name='听歌', desc='播放搜索结果中的歌曲')
+@handler(r'^/?\s*听\s*([0-9]+)$', name='听歌', desc='播放搜索结果中的歌曲')
 async def play_music(event, match):
     uid = str(event.user_id)
     info = _cache.get(uid)

@@ -102,13 +102,14 @@ async def _alert_ck_expired(event):
     if now - _alert_ts < _ALERT_INTERVAL:
         return
     _alert_ts = now
-    msg = '⚠ 点歌服务的 QQ音乐 Cookie 已过期，暂时点不了歌了，请尽快更新 p_skey 后重试～'
+    msg = '⚠ 点歌服务的 QQ音乐 Cookie 已过期，暂时点不了歌了，请尽快发「更新点歌CK」扫码更新～'
     try:
         await event.send_to_user(_ALERT_USER, msg)
     except Exception:
         pass
     try:
-        await event.send_to_group(_ALERT_GROUP, msg)
+        # 群内 @ 管理员提醒
+        await event.send_to_group(_ALERT_GROUP, f'<@{_ALERT_USER}> {msg}')
     except Exception:
         pass
 

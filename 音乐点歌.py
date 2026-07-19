@@ -8,6 +8,7 @@ __plugin_meta__ = {
 }
 
 
+import asyncio
 import json
 import re
 import time
@@ -195,13 +196,58 @@ async def play_music(event, match):
         code = data.get('code') if data else None
         return await _handle_error_code(event, uid, code)
 
-    quality_list = (data.get('data') or {}).get('quality_list') or []
-    music_url = ''
-    for q in quality_list:
-        if q.get('play_url'):
-            music_url = q['play_url']
-            break
+    d = data.get('data') or {}
+    info = d.get('base_info') or {}
+    music_url = _pick_play_url(d.get('quality_list') or [])
     if not music_url:
         return await event.reply(f'<@{uid}> 未获取到歌曲链接，请换一首歌尝试吧！', buttons=_BTN)
 
-    await event.reply_voice(music_url)
+    song_name = str(info.get('song_name') or '未知歌曲').strip()
+    singer = str(info.get('singer') or '未知歌手').strip()
+    album = str(info.get('album_name') or '').strip()
+    cover = str(info.get('album_cover') or '').strip()
+    songmid = str(info.get('songmid') or '').strip()
+    link = f'https://y.qq.com/n/ryqq/songDetail/{songmid}' if songmid else 'https://y.qq.com/'
+
+    # ark24 卡片：[#DESC#, #PROMPT#, #TITLE#, #METADESC#, #IMG#, #LINK#, #SUBTITLE#]
+    meta = f'{singer} · {album}' if album else singer
+    ark = ['🎵 点歌', f'[音乐] {song_name}', song_name, meta, cover, link, singer]
+    try:
+        await event.reply_ark(24, ark)
+    except Exception:
+        # ark 卡片失败不影响发语音，退化为文本
+        await event.reply(f'<@{uid}> 🎵 {song_name} - {singer}')
+
+    await _send_voice(event, music_url)
+
+
+def _pick_play_url(quality_list) -> str:
+    """优先选 mp3 直链当语音，其次任意可用直链。"""
+    mp3 = ''
+    first = ''
+    for q in quality_list:
+        url = (q.get('play_url') or '').strip()
+        if not url:
+            continue
+        if not first:
+            first = url
+        if '.mp3' in url.lower() and not mp3:
+            mp3 = url
+    return mp3 or first
+
+
+async def _send_voice(event, url: str) -> None:
+    """发语音，遇到 QQ「系统繁忙」(50015014) 等瞬时失败重试几次。
+
+    reply_voice 失败时返回 None（不抛异常），据此重试；仍失败给出提示。
+    """
+    for attempt in range(3):
+        try:
+            res = await event.reply_voice(url)
+        except Exception:
+            res = None
+        if res:
+            return
+        await asyncio.sleep(1.0 + attempt)
+    uid = str(event.user_id)
+    await event.reply(f'<@{uid}> 语音发送失败（QQ 接口繁忙），请稍后重发「听序号」重试～', buttons=_BTN)

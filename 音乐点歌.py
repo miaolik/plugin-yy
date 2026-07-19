@@ -207,7 +207,7 @@ async def play_music(event, match):
     album = str(info.get('album_name') or '').strip()
     cover = str(info.get('album_cover') or '').strip()
     songmid = str(info.get('songmid') or '').strip()
-    link = f'https://y.qq.com/n/ryqq/songDetail/{songmid}' if songmid else 'https://y.qq.com/'
+    link = f'https://y.qq.com/n/ryqq_v2/songDetail/{songmid}' if songmid else 'https://y.qq.com/'
 
     # ark24 卡片：[#DESC#, #PROMPT#, #TITLE#, #METADESC#, #IMG#, #LINK#, #SUBTITLE#]
     meta = f'{singer} · {album}' if album else singer

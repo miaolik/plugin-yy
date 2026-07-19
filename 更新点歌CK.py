@@ -101,6 +101,9 @@ async def cmd_update_ck(event, match):
             if st == "expired":
                 await event.reply("⏰ 二维码已过期，请重新发「更新点歌CK」～")
                 return
+            if st == "error":
+                await event.reply(f"❌ 登录已确认但取 CK 失败：{r.get('message')}\n请重新发「更新点歌CK」再扫一次～")
+                return
             if st == "scanned" and not scanned:
                 scanned = True
                 await event.reply("📲 已扫码，请在手机上确认登录～")

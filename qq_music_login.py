@@ -1,6 +1,6 @@
 """QQ音乐扫码登录（纯 HTTP，无需无头浏览器）。
 
-流程（用群文件同款登录参数 appid=715030901 登录，再换 QQ音乐 code）：
+流程（QQ音乐网站第三方登录 pt_3rd_aid=100497308）：
 1. ptqrshow 拿二维码图片并写入 qrsig → 用 hash33(qrsig) 算 ptqrtoken；
 2. 轮询 ptqrlogin，用户手机 QQ 扫码确认后返回 check_sig 跳转地址；
 3. 跟随 check_sig 登录跳转链，直接从回跳 URL 抓 OAuth code
@@ -17,11 +17,10 @@ import uuid
 
 import aiohttp
 
-# 登录参数：用群文件同款 QQ 扫码登录(appid=715030901)，在服务端能稳定写入
-# .qq.com 域登录态(p_skey/skey)；再用该登录态向 QQ音乐(client_id=100497308)换 code。
-APPID = 715030901
-DAID = 73
-PT_3RD_AID = 0
+# QQ音乐 网站自身的第三方登录参数（与 y.qq.com 网页扫码登录一致，登录能成功）
+APPID = 716027609
+DAID = 383
+PT_3RD_AID = 100497308
 CLIENT_ID = 100497308
 U1 = "https://graph.qq.com/oauth2.0/login_jump"
 REDIRECT_URI = "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https%3A%2F%2Fy.qq.com%2F"

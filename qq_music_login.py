@@ -3,8 +3,8 @@
 流程（QQ 第三方 OAuth，pt_3rd_aid=100497308）：
 1. ptqrshow 拿二维码图片并写入 qrsig → 用 hash33(qrsig) 算 ptqrtoken；
 2. 轮询 ptqrlogin，用户手机 QQ 扫码确认后返回 check_sig 跳转地址；
-3. 访问该地址由服务端 Set-Cookie 写入 p_skey 等；
-4. 用 g_tk(p_skey) 向 graph.qq.com/oauth2.0/authorize 换取 code；
+3. 跟随 check_sig 登录跳转链，直接从回跳 URL 抓 OAuth code
+   （抓不到再回退用 g_tk(p_skey) 向 graph.qq.com/oauth2.0/authorize 换 code）；
 5. 用 code 调 music.login.LoginServer/Login 换取 musickey(qm_keyst) 与 musicid(uin)；
 6. 拼成 qq.php 需要的 Cookie 串：uin/qm_keyst/qqmusic_key/ptcz/RK。
 """
@@ -116,26 +116,42 @@ class QRSession:
             return {"status": "waiting", "message": "二维码未失效，等待扫码"}
         return {"status": "waiting", "message": body[:80]}
 
-    async def _finish(self, check_url: str) -> str:
-        # 1) 访问 check_sig，服务端写入 p_skey / ptcz / RK 等。
-        #    cookie 落地偶有时序延迟，重试几次直到拿到 p_skey。
-        p_skey = ""
-        for attempt in range(5):
-            if check_url:
+    async def _follow_for_code(self, check_url: str) -> str:
+        """跟随 check_sig 登录跳转链，从跳转历史里直接抓 OAuth code。
+
+        QQ音乐第三方扫码登录成功后，check_sig 会一路 302 到
+        graph 授权页并回跳 y.qq.com/...?code=XXX，code 就在跳转 URL 里，
+        不需要再手动用 g_tk 调 authorize（那步在部分服务器不稳）。
+        """
+        if not check_url:
+            return ""
+        for _ in range(5):
+            try:
                 async with self.session.get(
                     check_url, headers={"Referer": "https://xui.ptlogin2.qq.com/", "User-Agent": _UA},
                     allow_redirects=True,
-                ):
-                    pass
-            p_skey = _cookie(self.jar, "p_skey") or _cookie(self.jar, "skey")
-            if p_skey:
+                ) as resp:
+                    urls = [str(resp.url)] + [str(h.url) for h in resp.history]
+                    text = await resp.text()
+            except Exception:
+                urls, text = [], ""
+            for u in urls:
+                m = re.search(r"[?&#]code=([^&\"'#]+)", u)
+                if m:
+                    return m.group(1)
+            m = re.search(r"code=([A-Za-z0-9]+)", text)
+            if m:
+                return m.group(1)
+            if _cookie(self.jar, "p_skey") or _cookie(self.jar, "skey"):
                 break
             await asyncio.sleep(0.6)
-        if not p_skey:
-            raise RuntimeError("未取到 p_skey")
-        gtk = g_tk(p_skey)
+        return ""
 
-        # 2) 用 g_tk(p_skey) 向 graph.qq.com 换取 OAuth code
+    async def _authorize_for_code(self) -> str:
+        """回退：用 g_tk(p_skey/skey) 主动向 graph.qq.com 换 code。"""
+        p_skey = _cookie(self.jar, "p_skey") or _cookie(self.jar, "skey")
+        if not p_skey:
+            return ""
         data = {
             "response_type": "code",
             "client_id": str(CLIENT_ID),
@@ -147,22 +163,32 @@ class QRSession:
             "src": "1",
             "update_auth": "1",
             "openapi": "1010_1030",
-            "g_tk": str(gtk),
+            "g_tk": str(g_tk(p_skey)),
             "auth_time": str(int(time.time() * 1000)),
             "ui": str(uuid.uuid4()),
         }
-        code = ""
-        async with self.session.post(
-            "https://graph.qq.com/oauth2.0/authorize", data=data,
-            headers={"Referer": "https://graph.qq.com/", "User-Agent": _UA},
-            allow_redirects=False,
-        ) as resp:
-            loc = resp.headers.get("Location", "")
-            body = await resp.text()
+        try:
+            async with self.session.post(
+                "https://graph.qq.com/oauth2.0/authorize", data=data,
+                headers={"Referer": "https://graph.qq.com/", "User-Agent": _UA},
+                allow_redirects=False,
+            ) as resp:
+                loc = resp.headers.get("Location", "")
+                body = await resp.text()
+        except Exception:
+            return ""
         m = re.search(r"code=([^&\"']+)", loc) or re.search(r"code=([^&\"']+)", body)
-        if not m:
-            raise RuntimeError("未换取到 OAuth code")
-        code = m.group(1)
+        return m.group(1) if m else ""
+
+    async def _finish(self, check_url: str) -> str:
+        # 1) 跟随登录跳转链直接抓 code；抓不到再回退到手动 authorize。
+        code = await self._follow_for_code(check_url)
+        if not code:
+            code = await self._authorize_for_code()
+        if not code:
+            has_pskey = bool(_cookie(self.jar, "p_skey") or _cookie(self.jar, "skey"))
+            raise RuntimeError(
+                "未换取到 OAuth code" + ("（已登录但授权未回跳code）" if has_pskey else "（未取到登录态）"))
 
         # 3) 用 code 换取 musickey(qm_keyst) / musicid(uin)
         payload = {

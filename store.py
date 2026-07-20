@@ -61,6 +61,29 @@ def set_ck_token(token: str):
     _write(data)
 
 
+def get_group_features(group_id) -> dict:
+    """按群的发送开关：{"voice": bool, "file": bool}，未配置默认全关。"""
+    groups = _read().get("group_features")
+    feats = groups.get(str(group_id)) if isinstance(groups, dict) else None
+    if not isinstance(feats, dict):
+        feats = {}
+    return {"voice": bool(feats.get("voice")), "file": bool(feats.get("file"))}
+
+
+def set_group_feature(group_id, feature: str, enabled: bool):
+    data = _read()
+    groups = data.get("group_features")
+    if not isinstance(groups, dict):
+        groups = {}
+    feats = groups.get(str(group_id))
+    if not isinstance(feats, dict):
+        feats = {}
+    feats[feature] = bool(enabled)
+    groups[str(group_id)] = feats
+    data["group_features"] = groups
+    _write(data)
+
+
 def get_admins() -> list:
     data = _read()
     admins = data.get("admins")

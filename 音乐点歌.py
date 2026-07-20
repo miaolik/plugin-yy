@@ -18,6 +18,8 @@ from collections import OrderedDict
 from core.network.http_compat import AsyncHttpClient
 from core.plugin.decorators import handler, on_unload
 
+from .store import get_group_features, is_admin, set_group_feature
+
 # ==================== 配置（按需修改）====================
 _API = 'https://lala.fan/API/qq.php'
 # CK 过期时主动提醒的目标（私聊用户 + 群）
@@ -215,10 +217,13 @@ async def play_music(event, match):
     try:
         await event.reply_ark(24, ark)
     except Exception:
-        # ark 卡片失败不影响发语音，退化为文本
         await event.reply(f'<@{uid}> 🎵 {song_name} - {singer}')
 
-    await _send_voice(event, music_url)
+    feats = get_group_features(event.group_id) if event.is_group else {}
+    if feats.get('voice'):
+        await _send_voice(event, music_url)
+    if feats.get('file'):
+        await _send_file(event, music_url, song_name)
 
 
 def _pick_play_url(quality_list) -> str:
@@ -238,6 +243,53 @@ def _pick_play_url(quality_list) -> str:
         if is_mp3 and not q320 and (str(q.get('quality')) == '320' or '320' in str(q.get('bitrate') or '')):
             q320 = url
     return q320 or mp3 or first
+
+
+_FEATURES = {'语音发送': 'voice', '上传文件': 'file'}
+
+
+@handler(r'^/?\s*(开|关)\s*(语音发送|上传文件)$', name='点歌开关', desc='按群开关语音发送/上传文件（仅管理员）')
+async def toggle_feature(event, match):
+    if not is_admin(event.user_id):
+        return
+    if not event.is_group or not event.group_id:
+        return await event.reply('该开关按群生效，请在群内发送')
+    enabled = match.group(1) == '开'
+    feature = _FEATURES[match.group(2)]
+    set_group_feature(event.group_id, feature, enabled)
+    feats = get_group_features(event.group_id)
+    await event.reply(
+        f'已{"开启" if enabled else "关闭"}本群的{match.group(2)}\n'
+        f'当前：语音发送 {"开" if feats["voice"] else "关"}｜上传文件 {"开" if feats["file"] else "关"}'
+    )
+
+
+@handler(r'^/?\s*点歌开关状态$', name='点歌开关状态', desc='查看本群语音/文件开关（仅管理员）')
+async def feature_status(event, match):
+    if not is_admin(event.user_id):
+        return
+    if not event.is_group or not event.group_id:
+        return await event.reply('请在群内发送')
+    feats = get_group_features(event.group_id)
+    await event.reply(f'本群：语音发送 {"开" if feats["voice"] else "关"}｜上传文件 {"开" if feats["file"] else "关"}\n群内默认只发卡片，用「开语音发送」「开上传文件」开启')
+
+
+_FILE_NAME_TBL = str.maketrans('', '', '\\/:*?"<>|')
+
+
+async def _send_file(event, url: str, song_name: str) -> None:
+    """上传 MP3 文件，文件名就是歌名。"""
+    name = (song_name or '歌曲').translate(_FILE_NAME_TBL).strip()[:60] or '歌曲'
+    for attempt in range(3):
+        try:
+            res = await event.reply_file(url, file_name=f'{name}.mp3')
+        except Exception:
+            res = None
+        if res:
+            return
+        await asyncio.sleep(1.0 + attempt)
+    uid = str(event.user_id)
+    await event.reply(f'<@{uid}> 文件上传失败（QQ 接口繁忙），请稍后重发「听序号」重试～', buttons=_BTN)
 
 
 async def _send_voice(event, url: str) -> None:
